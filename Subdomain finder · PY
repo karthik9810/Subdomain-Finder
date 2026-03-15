@@ -1,0 +1,340 @@
+#!/usr/bin/env python3
+"""
+╔══════════════════════════════════════════════════════════════╗
+║         SUBDOMAIN FINDER - Subdomain Enumeration Tool        ║
+║         FOR EDUCATIONAL & AUTHORIZED PENTESTING ONLY         ║
+╚══════════════════════════════════════════════════════════════╝
+"""
+ 
+import socket
+import sys
+import os
+import json
+import threading
+import argparse
+from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
+ 
+# ─── Try importing requests ───────────────────────────────────
+try:
+    import requests
+    REQUESTS_AVAILABLE = True
+except ImportError:
+    REQUESTS_AVAILABLE = False
+ 
+# ─── ANSI Colors ──────────────────────────────────────────────
+class C:
+    RED     = "\033[91m"
+    GREEN   = "\033[92m"
+    YELLOW  = "\033[93m"
+    BLUE    = "\033[94m"
+    MAGENTA = "\033[95m"
+    CYAN    = "\033[96m"
+    WHITE   = "\033[97m"
+    BOLD    = "\033[1m"
+    DIM     = "\033[2m"
+    RESET   = "\033[0m"
+ 
+# ─── Subdomain Wordlist ───────────────────────────────────────
+WORDLIST = [
+    "www", "mail", "ftp", "smtp", "pop", "imap", "webmail",
+    "remote", "blog", "dev", "staging", "test", "api", "admin",
+    "portal", "vpn", "secure", "shop", "store", "beta", "app",
+    "mobile", "m", "static", "cdn", "media", "img", "images",
+    "video", "docs", "wiki", "help", "support", "forum", "news",
+    "login", "auth", "sso", "oauth", "dashboard", "panel",
+    "cpanel", "whm", "webdisk", "autodiscover", "autoconfig",
+    "ns1", "ns2", "ns3", "dns", "dns1", "dns2", "mx", "mx1",
+    "mx2", "smtp1", "smtp2", "pop3", "imap4", "exchange",
+    "outlook", "office", "cloud", "server", "host", "web",
+    "web1", "web2", "db", "database", "mysql", "sql", "oracle",
+    "mongo", "redis", "elastic", "kibana", "grafana", "jenkins",
+    "gitlab", "github", "bitbucket", "jira", "confluence",
+    "slack", "chat", "meet", "conference", "zoom", "teams",
+    "demo", "sandbox", "uat", "qa", "prod", "production",
+    "backup", "bak", "old", "new", "v1", "v2", "v3", "status",
+    "monitor", "health", "metrics", "log", "logs", "audit",
+    "report", "analytics", "tracking", "ads", "marketing",
+    "crm", "erp", "hr", "finance", "billing", "invoice",
+    "payment", "pay", "checkout", "cart", "order", "orders",
+    "account", "accounts", "user", "users", "member", "members",
+    "partner", "partners", "affiliate", "agent", "agents",
+    "internal", "intranet", "extranet", "corp", "corporate",
+    "office1", "office2", "hq", "dc", "datacenter", "proxy",
+    "gateway", "firewall", "router", "switch", "ap", "wifi",
+    "download", "downloads", "upload", "uploads", "file",
+    "files", "share", "shares", "nas", "storage", "backup1",
+    "mx3", "mail1", "mail2", "smtp3", "pop2", "webmail2",
+    "owa", "exchange2", "relay", "bounce", "noreply",
+]
+ 
+# ─── Banner ───────────────────────────────────────────────────
+def print_banner():
+    print(f"""
+{C.CYAN}{C.BOLD}
+  ██████╗ ██╗   ██╗██████╗ ██████╗  ██████╗ ███╗   ███╗ █████╗ ██╗███╗   ██╗
+  ██╔════╝██║   ██║██╔══██╗██╔══██╗██╔═══██╗████╗ ████║██╔══██╗██║████╗  ██║
+  ███████╗██║   ██║██████╔╝██║  ██║██║   ██║██╔████╔██║███████║██║██╔██╗ ██║
+  ╚════██║██║   ██║██╔══██╗██║  ██║██║   ██║██║╚██╔╝██║██╔══██║██║██║╚██╗██║
+  ███████║╚██████╔╝██████╔╝██████╔╝╚██████╔╝██║ ╚═╝ ██║██║  ██║██║██║ ╚████║
+  ╚══════╝ ╚═════╝ ╚═════╝ ╚═════╝  ╚═════╝ ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝╚═╝  ╚═══╝
+                                                                               
+       ███████╗██╗███╗   ██╗██████╗ ███████╗██████╗
+       ██╔════╝██║████╗  ██║██╔══██╗██╔════╝██╔══██╗
+       █████╗  ██║██╔██╗ ██║██║  ██║█████╗  ██████╔╝
+       ██╔══╝  ██║██║╚██╗██║██║  ██║██╔══╝  ██╔══██╗
+       ██║     ██║██║ ╚████║██████╔╝███████╗██║  ██║
+       ╚═╝     ╚═╝╚═╝  ╚═══╝╚═════╝ ╚══════╝╚═╝  ╚═╝
+{C.RESET}
+{C.DIM}              Subdomain Enumeration Tool  |  Educational Use Only{C.RESET}
+{C.RED}    ⚠  Only scan domains you own or have explicit permission to test.{C.RESET}
+""")
+ 
+# ─── Clean Domain Input ───────────────────────────────────────
+def clean_domain(domain):
+    domain = domain.strip()
+    domain = domain.replace("https://", "").replace("http://", "")
+    domain = domain.replace("www.", "")
+    domain = domain.split("/")[0]
+    return domain.lower()
+ 
+# ─── DNS Resolve ──────────────────────────────────────────────
+def resolve_subdomain(subdomain, domain, timeout=2):
+    full = f"{subdomain}.{domain}"
+    try:
+        socket.setdefaulttimeout(timeout)
+        ip = socket.gethostbyname(full)
+        return (full, ip, True)
+    except (socket.gaierror, socket.timeout):
+        return (full, None, False)
+ 
+# ─── HTTP Status Check ────────────────────────────────────────
+def check_http(full_domain, timeout=3):
+    if not REQUESTS_AVAILABLE:
+        return None, None
+    for scheme in ["https", "http"]:
+        try:
+            url = f"{scheme}://{full_domain}"
+            r = requests.get(url, timeout=timeout, allow_redirects=True,
+                             headers={"User-Agent": "Mozilla/5.0"})
+            return r.status_code, url
+        except Exception:
+            continue
+    return None, None
+ 
+# ─── Status Color ─────────────────────────────────────────────
+def status_color(code):
+    if code is None:
+        return C.DIM
+    if 200 <= code < 300:
+        return C.GREEN
+    if 300 <= code < 400:
+        return C.YELLOW
+    if 400 <= code < 500:
+        return C.MAGENTA
+    return C.RED
+ 
+# ─── Separator ────────────────────────────────────────────────
+def sep():
+    print(f"  {C.DIM}{'─' * 65}{C.RESET}")
+ 
+# ─── Progress Bar ─────────────────────────────────────────────
+def progress(current, total, found):
+    pct  = int((current / total) * 40)
+    bar  = f"{C.GREEN}{'█' * pct}{C.DIM}{'░' * (40 - pct)}{C.RESET}"
+    print(f"\r  [{bar}] {C.CYAN}{current}/{total}{C.RESET}  Found: {C.GREEN}{found}{C.RESET}  ", end="", flush=True)
+ 
+# ─── Main Scan ────────────────────────────────────────────────
+def scan(domain, wordlist, threads=50, http_check=False, output_file=None):
+    found     = []
+    total     = len(wordlist)
+    completed = 0
+    lock      = threading.Lock()
+ 
+    print(f"\n  {C.BOLD}{C.WHITE}Target   : {C.CYAN}{domain}{C.RESET}")
+    print(f"  {C.BOLD}{C.WHITE}Wordlist : {C.CYAN}{total} subdomains{C.RESET}")
+    print(f"  {C.BOLD}{C.WHITE}Threads  : {C.CYAN}{threads}{C.RESET}")
+    print(f"  {C.BOLD}{C.WHITE}HTTP Chk : {C.CYAN}{'Yes' if http_check else 'No'}{C.RESET}")
+    print(f"  {C.BOLD}{C.WHITE}Started  : {C.CYAN}{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}{C.RESET}")
+    sep()
+    print(f"\n  {C.YELLOW}Scanning...{C.RESET}\n")
+ 
+    def worker(sub):
+        nonlocal completed
+        full, ip, alive = resolve_subdomain(sub, domain)
+        with lock:
+            completed += 1
+            progress(completed, total, len(found))
+        if alive:
+            status_code = None
+            url         = None
+            if http_check:
+                status_code, url = check_http(full)
+            with lock:
+                found.append({
+                    "subdomain": full,
+                    "ip":        ip,
+                    "status":    status_code,
+                    "url":       url,
+                })
+        return None
+ 
+    with ThreadPoolExecutor(max_workers=threads) as executor:
+        futures = [executor.submit(worker, sub) for sub in wordlist]
+        for _ in as_completed(futures):
+            pass
+ 
+    print(f"\n\n  {C.GREEN}✔ Scan complete!{C.RESET}\n")
+    sep()
+ 
+    # ─── Print Results ────────────────────────────────────────
+    if found:
+        print(f"\n  {C.BOLD}{C.GREEN}FOUND {len(found)} SUBDOMAINS:{C.RESET}\n")
+        for i, item in enumerate(found, 1):
+            sc    = item["status"]
+            color = status_color(sc)
+            sc_str = f"{color}[{sc}]{C.RESET}" if sc else f"{C.DIM}[DNS]{C.RESET}"
+            print(f"  {C.DIM}[{i:03d}]{C.RESET}  {C.CYAN}{item['subdomain']:<40}{C.RESET}  "
+                  f"{C.YELLOW}{item['ip']:<18}{C.RESET}  {sc_str}")
+    else:
+        print(f"\n  {C.YELLOW}No subdomains found. Try a larger wordlist.{C.RESET}")
+ 
+    sep()
+ 
+    # ─── Summary ─────────────────────────────────────────────
+    print(f"\n  {C.BOLD}SUMMARY{C.RESET}")
+    print(f"  Total Checked : {C.CYAN}{total}{C.RESET}")
+    print(f"  Found         : {C.GREEN}{len(found)}{C.RESET}")
+    print(f"  Not Found     : {C.DIM}{total - len(found)}{C.RESET}")
+ 
+    # ─── Save Results ─────────────────────────────────────────
+    if output_file and found:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        fname = output_file or f"subdomains_{domain}_{timestamp}.txt"
+ 
+        # Save TXT
+        txt_file = fname.replace(".json", "") + ".txt"
+        with open(txt_file, "w") as f:
+            f.write(f"# Subdomain Finder Results\n")
+            f.write(f"# Target  : {domain}\n")
+            f.write(f"# Date    : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"# Found   : {len(found)}\n\n")
+            for item in found:
+                f.write(f"{item['subdomain']} | {item['ip']} | {item['status']}\n")
+        print(f"\n  {C.GREEN}✔ Saved to {C.BOLD}{txt_file}{C.RESET}")
+ 
+        # Save JSON
+        json_file = fname.replace(".txt", "") + ".json"
+        with open(json_file, "w") as f:
+            json.dump({
+                "target": domain,
+                "date": datetime.now().isoformat(),
+                "found": len(found),
+                "results": found
+            }, f, indent=2)
+        print(f"  {C.GREEN}✔ Saved to {C.BOLD}{json_file}{C.RESET}")
+ 
+    return found
+ 
+# ─── Custom Wordlist Loader ───────────────────────────────────
+def load_wordlist(path):
+    if not os.path.exists(path):
+        print(f"  {C.RED}File not found: {path}{C.RESET}")
+        sys.exit(1)
+    with open(path) as f:
+        words = [line.strip() for line in f if line.strip()]
+    print(f"  {C.GREEN}✔ Loaded {len(words)} words from {path}{C.RESET}")
+    return words
+ 
+# ─── Interactive Mode ─────────────────────────────────────────
+def interactive_mode():
+    print_banner()
+ 
+    # Get domain
+    print(f"  {C.BOLD}{C.WHITE}ENTER TARGET DOMAIN{C.RESET}")
+    print(f"  {C.DIM}Example: google.com  or  https://example.com{C.RESET}\n")
+    raw = input(f"  {C.YELLOW}>> Domain: {C.RESET}").strip()
+    if not raw:
+        print(f"  {C.RED}No domain entered. Exiting.{C.RESET}")
+        sys.exit(0)
+    domain = clean_domain(raw)
+    print(f"  {C.GREEN}✔ Target set to: {domain}{C.RESET}\n")
+ 
+    # Custom wordlist?
+    print(f"  {C.BOLD}{C.WHITE}WORDLIST{C.RESET}")
+    print(f"  1. Use built-in wordlist ({len(WORDLIST)} subdomains)")
+    print(f"  2. Load custom wordlist from file")
+    wl_choice = input(f"\n  {C.YELLOW}>> Choice (1/2): {C.RESET}").strip()
+    if wl_choice == "2":
+        path = input(f"  {C.YELLOW}>> File path: {C.RESET}").strip()
+        wordlist = load_wordlist(path)
+    else:
+        wordlist = WORDLIST
+ 
+    # HTTP check?
+    print(f"\n  {C.BOLD}{C.WHITE}HTTP STATUS CHECK{C.RESET}")
+    print(f"  {C.DIM}Check if subdomains respond to HTTP/HTTPS? (slower but more info){C.RESET}")
+    http_ans = input(f"\n  {C.YELLOW}>> Enable HTTP check? (y/n): {C.RESET}").strip().lower()
+    http_check = http_ans == "y"
+ 
+    if http_check and not REQUESTS_AVAILABLE:
+        print(f"  {C.YELLOW}⚠ 'requests' not installed. Run: pip install requests{C.RESET}")
+        http_check = False
+ 
+    # Save output?
+    print(f"\n  {C.BOLD}{C.WHITE}SAVE RESULTS{C.RESET}")
+    save_ans = input(f"  {C.YELLOW}>> Save results to file? (y/n): {C.RESET}").strip().lower()
+    output_file = None
+    if save_ans == "y":
+        timestamp  = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_file = f"subdomains_{domain}_{timestamp}"
+        print(f"  {C.GREEN}✔ Results will be saved as {output_file}.txt / .json{C.RESET}")
+ 
+    # Threads
+    print(f"\n  {C.BOLD}{C.WHITE}THREADS (default: 50){C.RESET}")
+    t_input = input(f"  {C.YELLOW}>> Threads (press Enter for 50): {C.RESET}").strip()
+    threads = int(t_input) if t_input.isdigit() else 50
+ 
+    # Run scan
+    scan(domain, wordlist, threads=threads, http_check=http_check, output_file=output_file)
+ 
+# ─── CLI Mode ─────────────────────────────────────────────────
+def cli_mode(args):
+    domain = clean_domain(args.domain)
+    wordlist = load_wordlist(args.wordlist) if args.wordlist else WORDLIST
+ 
+    if args.http and not REQUESTS_AVAILABLE:
+        print(f"  {C.YELLOW}⚠ Install requests: pip install requests{C.RESET}")
+        args.http = False
+ 
+    output_file = args.output or f"subdomains_{domain}_{datetime.now().strftime('%Y%m%d_%H%M%S')}" if args.save else None
+    scan(domain, wordlist, threads=args.threads, http_check=args.http, output_file=output_file)
+ 
+# ─── Entry Point ──────────────────────────────────────────────
+def main():
+    parser = argparse.ArgumentParser(
+        description="Subdomain Finder - Subdomain Enumeration Tool",
+        epilog="Example: python subdomain_finder.py --domain example.com --http --save"
+    )
+    parser.add_argument("--domain",   help="Target domain (e.g. example.com)")
+    parser.add_argument("--wordlist", help="Path to custom wordlist file")
+    parser.add_argument("--threads",  type=int, default=50, help="Number of threads (default: 50)")
+    parser.add_argument("--http",     action="store_true", help="Enable HTTP status check")
+    parser.add_argument("--save",     action="store_true", help="Save results to file")
+    parser.add_argument("--output",   help="Output filename (without extension)")
+ 
+    args = parser.parse_args()
+ 
+    if args.domain:
+        print_banner()
+        cli_mode(args)
+    else:
+        interactive_mode()
+ 
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print(f"\n\n  {C.YELLOW}Scan interrupted by user.{C.RESET}\n")
+        sys.exit(0)
+ 
