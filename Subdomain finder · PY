@@ -1,28 +1,52 @@
 #!/usr/bin/env python3
 """
-╔══════════════════════════════════════════════════════════════╗
-║         SUBDOMAIN FINDER - Subdomain Enumeration Tool        ║
-║         FOR EDUCATIONAL & AUTHORIZED PENTESTING ONLY         ║
-╚══════════════════════════════════════════════════════════════╝
+╔══════════════════════════════════════════════════════════════════════╗
+║        SUBDOMAIN FINDER PRO - Advanced Enumeration & Vuln Scanner   ║
+║              FOR AUTHORIZED PENETRATION TESTING ONLY                ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+Features:
+  ✔ DNS brute-force (multi-threaded)
+  ✔ Certificate Transparency via crt.sh (passive, no noise)
+  ✔ DNS Zone Transfer attempt (AXFR)
+  ✔ Wildcard DNS detection (avoid false positives)
+  ✔ HTTP/HTTPS status checking
+  ✔ Subdomain Takeover detection (30+ fingerprints)
+  ✔ Open port scanning on discovered subdomains
+  ✔ TXT / SPF / MX record grabbing
+  ✔ IPv4 + IPv6 resolution
+  ✔ Rich TXT + JSON + HTML report output
 """
- 
+
 import socket
 import sys
 import os
 import json
 import threading
 import argparse
+import random
+import string
+import time
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
- 
-# ─── Try importing requests ───────────────────────────────────
+
+# ── Optional deps ────────────────────────────────────────────────────
 try:
     import requests
-    REQUESTS_AVAILABLE = True
+    REQUESTS_OK = True
 except ImportError:
-    REQUESTS_AVAILABLE = False
- 
-# ─── ANSI Colors ──────────────────────────────────────────────
+    REQUESTS_OK = False
+
+try:
+    import dns.resolver
+    import dns.zone
+    import dns.query
+    import dns.exception
+    DNSPYTHON_OK = True
+except ImportError:
+    DNSPYTHON_OK = False
+
+# ── ANSI Colors ──────────────────────────────────────────────────────
 class C:
     RED     = "\033[91m"
     GREEN   = "\033[92m"
@@ -34,41 +58,87 @@ class C:
     BOLD    = "\033[1m"
     DIM     = "\033[2m"
     RESET   = "\033[0m"
- 
-# ─── Subdomain Wordlist ───────────────────────────────────────
+
+# ── Subdomain Wordlist ───────────────────────────────────────────────
 WORDLIST = [
-    "www", "mail", "ftp", "smtp", "pop", "imap", "webmail",
-    "remote", "blog", "dev", "staging", "test", "api", "admin",
-    "portal", "vpn", "secure", "shop", "store", "beta", "app",
-    "mobile", "m", "static", "cdn", "media", "img", "images",
-    "video", "docs", "wiki", "help", "support", "forum", "news",
-    "login", "auth", "sso", "oauth", "dashboard", "panel",
-    "cpanel", "whm", "webdisk", "autodiscover", "autoconfig",
-    "ns1", "ns2", "ns3", "dns", "dns1", "dns2", "mx", "mx1",
-    "mx2", "smtp1", "smtp2", "pop3", "imap4", "exchange",
-    "outlook", "office", "cloud", "server", "host", "web",
-    "web1", "web2", "db", "database", "mysql", "sql", "oracle",
-    "mongo", "redis", "elastic", "kibana", "grafana", "jenkins",
-    "gitlab", "github", "bitbucket", "jira", "confluence",
-    "slack", "chat", "meet", "conference", "zoom", "teams",
-    "demo", "sandbox", "uat", "qa", "prod", "production",
-    "backup", "bak", "old", "new", "v1", "v2", "v3", "status",
-    "monitor", "health", "metrics", "log", "logs", "audit",
-    "report", "analytics", "tracking", "ads", "marketing",
-    "crm", "erp", "hr", "finance", "billing", "invoice",
-    "payment", "pay", "checkout", "cart", "order", "orders",
-    "account", "accounts", "user", "users", "member", "members",
-    "partner", "partners", "affiliate", "agent", "agents",
-    "internal", "intranet", "extranet", "corp", "corporate",
-    "office1", "office2", "hq", "dc", "datacenter", "proxy",
-    "gateway", "firewall", "router", "switch", "ap", "wifi",
-    "download", "downloads", "upload", "uploads", "file",
-    "files", "share", "shares", "nas", "storage", "backup1",
-    "mx3", "mail1", "mail2", "smtp3", "pop2", "webmail2",
-    "owa", "exchange2", "relay", "bounce", "noreply",
+    "www", "mail", "ftp", "smtp", "pop", "imap", "webmail", "remote",
+    "blog", "dev", "staging", "test", "api", "admin", "portal", "vpn",
+    "secure", "shop", "store", "beta", "app", "mobile", "m", "static",
+    "cdn", "media", "img", "images", "video", "docs", "wiki", "help",
+    "support", "forum", "news", "login", "auth", "sso", "oauth",
+    "dashboard", "panel", "cpanel", "whm", "webdisk", "autodiscover",
+    "autoconfig", "ns1", "ns2", "ns3", "dns", "dns1", "dns2", "mx",
+    "mx1", "mx2", "smtp1", "smtp2", "pop3", "imap4", "exchange",
+    "outlook", "office", "cloud", "server", "host", "web", "web1",
+    "web2", "db", "database", "mysql", "sql", "oracle", "mongo",
+    "redis", "elastic", "kibana", "grafana", "jenkins", "gitlab",
+    "github", "bitbucket", "jira", "confluence", "slack", "chat",
+    "meet", "conference", "zoom", "teams", "demo", "sandbox", "uat",
+    "qa", "prod", "production", "backup", "bak", "old", "new", "v1",
+    "v2", "v3", "status", "monitor", "health", "metrics", "log",
+    "logs", "audit", "report", "analytics", "tracking", "ads",
+    "marketing", "crm", "erp", "hr", "finance", "billing", "invoice",
+    "payment", "pay", "checkout", "cart", "order", "orders", "account",
+    "accounts", "user", "users", "member", "members", "partner",
+    "partners", "affiliate", "agent", "agents", "internal", "intranet",
+    "extranet", "corp", "corporate", "office1", "office2", "hq", "dc",
+    "datacenter", "proxy", "gateway", "firewall", "router", "switch",
+    "download", "downloads", "upload", "uploads", "file", "files",
+    "share", "shares", "nas", "storage", "backup1", "mx3", "mail1",
+    "mail2", "smtp3", "pop2", "webmail2", "owa", "exchange2", "relay",
+    "bounce", "noreply", "git", "svn", "ci", "cd", "build", "deploy",
+    "infra", "k8s", "kubernetes", "docker", "registry", "vault",
+    "secret", "config", "env", "test1", "test2", "dev1", "dev2",
+    "stage", "preprod", "rc", "alpha", "canary", "edge", "cdn1",
+    "cdn2", "assets", "api2", "api3", "graphql", "grpc", "ws",
+    "wss", "socket", "push", "notify", "webhook", "callback",
+    "int", "integration", "connect", "bridge", "hub", "gateway2",
+    "mgmt", "manage", "console", "control", "ops", "devops",
 ]
- 
-# ─── Banner ───────────────────────────────────────────────────
+
+# ── Takeover Fingerprints ────────────────────────────────────────────
+# Format: (service_name, cname_keyword, body_fingerprint)
+TAKEOVER_SIGS = [
+    ("GitHub Pages",     "github.io",              "There isn't a GitHub Pages site here"),
+    ("GitHub Pages",     "github.io",              "For root URLs (like http://example.com/) you must provide an index"),
+    ("Heroku",           "herokudns.com",           "No such app"),
+    ("Heroku",           "herokussl.com",           "No such app"),
+    ("Heroku",           "herokuapp.com",           "No such app"),
+    ("Fastly",           "fastly.net",              "Fastly error: unknown domain"),
+    ("Shopify",          "myshopify.com",           "Sorry, this shop is currently unavailable"),
+    ("Tumblr",           "domains.tumblr.com",      "There's nothing here"),
+    ("WordPress",        "wordpress.com",           "Do you want to register"),
+    ("Ghost",            "ghost.io",                "The thing you were looking for is no longer here"),
+    ("Surge.sh",         "surge.sh",                "project not found"),
+    ("Bitbucket",        "bitbucket.io",            "Repository not found"),
+    ("Azure",            "azurewebsites.net",       "404 Web Site not found"),
+    ("Azure",            "cloudapp.net",            "404 Web Site not found"),
+    ("AWS S3",           "s3.amazonaws.com",        "NoSuchBucket"),
+    ("AWS CloudFront",   "cloudfront.net",          "Bad request"),
+    ("Pantheon",         "pantheonsite.io",         "The gods are wise"),
+    ("Zendesk",          "zendesk.com",             "Help Center Closed"),
+    ("Freshdesk",        "freshdesk.com",           "We couldn't find the server"),
+    ("Hubspot",          "hubspot.net",             "Domain not found"),
+    ("Netlify",          "netlify.app",             "Not Found - Request ID"),
+    ("Netlify",          "netlify.com",             "Not Found - Request ID"),
+    ("ReadTheDocs",      "readthedocs.io",          "unknown to Read the Docs"),
+    ("Cargo",            "cargocollective.com",     "404 Not Found"),
+    ("UserVoice",        "uservoice.com",           "This UserVoice subdomain is currently available"),
+    ("Intercom",         "custom.intercom.help",    "This page doesn't exist"),
+    ("Pingdom",          "stats.pingdom.com",       "This public report page has not been activated"),
+    ("Strikingly",       "strikingly.com",          "But if you're looking to build your own website"),
+    ("Unbounce",         "unbouncepages.com",       "The requested URL was not found on this server"),
+    ("Webflow",          "webflow.io",              "The page you are looking for doesn't exist"),
+    ("Squarespace",      "squarespace.com",         "No Such Account"),
+    ("Campaign Monitor", "createsend.com",          "Double check the URL"),
+]
+
+# ── Common ports to scan ─────────────────────────────────────────────
+COMMON_PORTS = [21, 22, 23, 25, 53, 80, 110, 143, 443, 445, 3306, 3389, 5432, 6379, 8080, 8443, 8888, 27017]
+
+# ═════════════════════════════════════════════════════════════════════
+#  BANNER
+# ═════════════════════════════════════════════════════════════════════
 def print_banner():
     print(f"""
 {C.CYAN}{C.BOLD}
@@ -78,263 +148,685 @@ def print_banner():
   ╚════██║██║   ██║██╔══██╗██║  ██║██║   ██║██║╚██╔╝██║██╔══██║██║██║╚██╗██║
   ███████║╚██████╔╝██████╔╝██████╔╝╚██████╔╝██║ ╚═╝ ██║██║  ██║██║██║ ╚████║
   ╚══════╝ ╚═════╝ ╚═════╝ ╚═════╝  ╚═════╝ ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝╚═╝  ╚═══╝
-                                                                               
-       ███████╗██╗███╗   ██╗██████╗ ███████╗██████╗
-       ██╔════╝██║████╗  ██║██╔══██╗██╔════╝██╔══██╗
-       █████╗  ██║██╔██╗ ██║██║  ██║█████╗  ██████╔╝
-       ██╔══╝  ██║██║╚██╗██║██║  ██║██╔══╝  ██╔══██╗
-       ██║     ██║██║ ╚████║██████╔╝███████╗██║  ██║
-       ╚═╝     ╚═╝╚═╝  ╚═══╝╚═════╝ ╚══════╝╚═╝  ╚═╝
+{C.RESET}{C.MAGENTA}{C.BOLD}
+         ██████╗ ██████╗  ██████╗
+         ██╔══██╗██╔══██╗██╔═══██╗
+         ██████╔╝██████╔╝██║   ██║
+         ██╔═══╝ ██╔══██╗██║   ██║
+         ██║     ██║  ██║╚██████╔╝
+         ╚═╝     ╚═╝  ╚═╝ ╚═════╝
 {C.RESET}
-{C.DIM}              Subdomain Enumeration Tool  |  Educational Use Only{C.RESET}
-{C.RED}    ⚠  Only scan domains you own or have explicit permission to test.{C.RESET}
+{C.DIM}  Subdomain Enumeration & Vulnerability Scanner  |  Authorized Use Only{C.RESET}
+{C.RED}  ⚠  Only scan domains you own or have WRITTEN permission to test.{C.RESET}
+{C.RED}  ⚠  Unauthorized scanning is illegal under computer crime laws.{C.RESET}
 """)
- 
-# ─── Clean Domain Input ───────────────────────────────────────
+
+
+# ═════════════════════════════════════════════════════════════════════
+#  HELPERS
+# ═════════════════════════════════════════════════════════════════════
+def sep(char="─", length=68):
+    print(f"  {C.DIM}{char * length}{C.RESET}")
+
 def clean_domain(domain):
-    domain = domain.strip()
-    domain = domain.replace("https://", "").replace("http://", "")
-    domain = domain.replace("www.", "")
-    domain = domain.split("/")[0]
-    return domain.lower()
- 
-# ─── DNS Resolve ──────────────────────────────────────────────
-def resolve_subdomain(subdomain, domain, timeout=2):
+    domain = domain.strip().lower()
+    for prefix in ["https://", "http://", "www."]:
+        domain = domain.replace(prefix, "")
+    return domain.split("/")[0]
+
+def progress(current, total, found, vulns):
+    pct = int((current / total) * 38)
+    bar = f"{C.GREEN}{'█' * pct}{C.DIM}{'░' * (38 - pct)}{C.RESET}"
+    vuln_str = f"  {C.RED}Vulns:{vulns}{C.RESET}" if vulns else ""
+    print(f"\r  [{bar}] {C.CYAN}{current}/{total}{C.RESET}  "
+          f"Found:{C.GREEN}{found}{C.RESET}{vuln_str}  ", end="", flush=True)
+
+def status_color(code):
+    if code is None:       return C.DIM
+    if 200 <= code < 300:  return C.GREEN
+    if 300 <= code < 400:  return C.YELLOW
+    if 400 <= code < 500:  return C.MAGENTA
+    return C.RED
+
+def random_str(n=12):
+    return ''.join(random.choices(string.ascii_lowercase + string.digits, k=n))
+
+
+# ═════════════════════════════════════════════════════════════════════
+#  PHASE 0 — WILDCARD DETECTION
+# ═════════════════════════════════════════════════════════════════════
+def detect_wildcard(domain):
+    """Resolve a random non-existent subdomain. If it resolves, wildcard DNS is active."""
+    test = f"{random_str()}.{domain}"
+    try:
+        socket.setdefaulttimeout(3)
+        ip = socket.gethostbyname(test)
+        return ip  # wildcard IP
+    except (socket.gaierror, socket.timeout):
+        return None
+
+
+# ═════════════════════════════════════════════════════════════════════
+#  PHASE 1 — CERTIFICATE TRANSPARENCY (crt.sh)
+# ═════════════════════════════════════════════════════════════════════
+def crtsh_lookup(domain):
+    """Query crt.sh for subdomains via Certificate Transparency logs."""
+    found = set()
+    if not REQUESTS_OK:
+        return found
+    try:
+        url = f"https://crt.sh/?q=%25.{domain}&output=json"
+        r = requests.get(url, timeout=15, headers={"User-Agent": "SubdomainFinderPro/2.0"})
+        if r.status_code == 200:
+            data = r.json()
+            for entry in data:
+                name = entry.get("name_value", "")
+                for sub in name.splitlines():
+                    sub = sub.strip().lstrip("*.")
+                    if sub.endswith(f".{domain}") or sub == domain:
+                        found.add(sub.lower())
+    except Exception:
+        pass
+    return found
+
+
+# ═════════════════════════════════════════════════════════════════════
+#  PHASE 2 — DNS ZONE TRANSFER (AXFR)
+# ═════════════════════════════════════════════════════════════════════
+def zone_transfer(domain):
+    """Attempt AXFR zone transfer against all nameservers."""
+    found = set()
+    if not DNSPYTHON_OK:
+        return found, []
+    ns_list = []
+    try:
+        answers = dns.resolver.resolve(domain, "NS")
+        ns_list = [str(r.target).rstrip(".") for r in answers]
+    except Exception:
+        return found, ns_list
+
+    for ns in ns_list:
+        try:
+            z = dns.zone.from_xfr(dns.query.xfr(ns, domain, timeout=5))
+            for name in z.nodes.keys():
+                record = str(name)
+                if record != "@":
+                    found.add(f"{record}.{domain}")
+        except Exception:
+            pass
+    return found, ns_list
+
+
+# ═════════════════════════════════════════════════════════════════════
+#  PHASE 3 — DNS RESOLUTION
+# ═════════════════════════════════════════════════════════════════════
+def resolve_subdomain(subdomain, domain, timeout=2, wildcard_ip=None):
     full = f"{subdomain}.{domain}"
     try:
         socket.setdefaulttimeout(timeout)
         ip = socket.gethostbyname(full)
+        if wildcard_ip and ip == wildcard_ip:
+            return (full, None, False)  # filter wildcard false-positives
         return (full, ip, True)
     except (socket.gaierror, socket.timeout):
         return (full, None, False)
- 
-# ─── HTTP Status Check ────────────────────────────────────────
-def check_http(full_domain, timeout=3):
-    if not REQUESTS_AVAILABLE:
-        return None, None
+
+def resolve_ipv6(full_domain):
+    if not DNSPYTHON_OK:
+        return None
+    try:
+        answers = dns.resolver.resolve(full_domain, "AAAA")
+        return str(answers[0])
+    except Exception:
+        return None
+
+def get_cname(full_domain):
+    if not DNSPYTHON_OK:
+        return None
+    try:
+        answers = dns.resolver.resolve(full_domain, "CNAME")
+        return str(answers[0].target).rstrip(".")
+    except Exception:
+        return None
+
+def get_txt_records(domain):
+    if not DNSPYTHON_OK:
+        return []
+    try:
+        answers = dns.resolver.resolve(domain, "TXT")
+        return [str(r) for r in answers]
+    except Exception:
+        return []
+
+
+# ═════════════════════════════════════════════════════════════════════
+#  PHASE 4 — HTTP CHECK
+# ═════════════════════════════════════════════════════════════════════
+def check_http(full_domain, timeout=4):
+    if not REQUESTS_OK:
+        return None, None, None
     for scheme in ["https", "http"]:
         try:
             url = f"{scheme}://{full_domain}"
             r = requests.get(url, timeout=timeout, allow_redirects=True,
-                             headers={"User-Agent": "Mozilla/5.0"})
-            return r.status_code, url
+                             headers={"User-Agent": "Mozilla/5.0 (SubdomainFinderPro)"})
+            title = ""
+            if "<title>" in r.text.lower():
+                start = r.text.lower().find("<title>") + 7
+                end   = r.text.lower().find("</title>", start)
+                title = r.text[start:end].strip()[:60] if end > start else ""
+            return r.status_code, url, title
         except Exception:
             continue
-    return None, None
- 
-# ─── Status Color ─────────────────────────────────────────────
-def status_color(code):
-    if code is None:
-        return C.DIM
-    if 200 <= code < 300:
-        return C.GREEN
-    if 300 <= code < 400:
-        return C.YELLOW
-    if 400 <= code < 500:
-        return C.MAGENTA
-    return C.RED
- 
-# ─── Separator ────────────────────────────────────────────────
-def sep():
-    print(f"  {C.DIM}{'─' * 65}{C.RESET}")
- 
-# ─── Progress Bar ─────────────────────────────────────────────
-def progress(current, total, found):
-    pct  = int((current / total) * 40)
-    bar  = f"{C.GREEN}{'█' * pct}{C.DIM}{'░' * (40 - pct)}{C.RESET}"
-    print(f"\r  [{bar}] {C.CYAN}{current}/{total}{C.RESET}  Found: {C.GREEN}{found}{C.RESET}  ", end="", flush=True)
- 
-# ─── Main Scan ────────────────────────────────────────────────
-def scan(domain, wordlist, threads=50, http_check=False, output_file=None):
+    return None, None, None
+
+
+# ═════════════════════════════════════════════════════════════════════
+#  PHASE 5 — SUBDOMAIN TAKEOVER DETECTION
+# ═════════════════════════════════════════════════════════════════════
+def check_takeover(full_domain, cname=None, http_body=""):
+    """
+    Check for subdomain takeover vulnerability.
+    Returns (vulnerable: bool, service: str, reason: str)
+    """
+    for service, cname_kw, body_fp in TAKEOVER_SIGS:
+        # CNAME-based detection
+        if cname and cname_kw.lower() in cname.lower():
+            if body_fp.lower() in http_body.lower():
+                return True, service, f"CNAME → {cname} | Body fingerprint matched"
+        # Body-only detection (no CNAME needed)
+        elif not cname_kw and body_fp.lower() in http_body.lower():
+            return True, service, "Body fingerprint matched"
+    return False, None, None
+
+
+# ═════════════════════════════════════════════════════════════════════
+#  PHASE 6 — PORT SCAN
+# ═════════════════════════════════════════════════════════════════════
+PORT_NAMES = {
+    21: "FTP", 22: "SSH", 23: "Telnet", 25: "SMTP", 53: "DNS",
+    80: "HTTP", 110: "POP3", 143: "IMAP", 443: "HTTPS", 445: "SMB",
+    3306: "MySQL", 3389: "RDP", 5432: "Postgres", 6379: "Redis",
+    8080: "HTTP-Alt", 8443: "HTTPS-Alt", 8888: "HTTP-Alt", 27017: "MongoDB"
+}
+
+def scan_ports(ip, ports=COMMON_PORTS, timeout=1):
+    open_ports = []
+    for port in ports:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(timeout)
+                if s.connect_ex((ip, port)) == 0:
+                    open_ports.append((port, PORT_NAMES.get(port, "Unknown")))
+        except Exception:
+            pass
+    return open_ports
+
+
+# ═════════════════════════════════════════════════════════════════════
+#  REPORT GENERATION
+# ═════════════════════════════════════════════════════════════════════
+def save_txt(domain, found, output_base):
+    fname = output_base + ".txt"
+    vuln_count = sum(1 for r in found if r.get("takeover"))
+    with open(fname, "w") as f:
+        f.write("=" * 70 + "\n")
+        f.write(f"  SUBDOMAIN FINDER PRO — SCAN REPORT\n")
+        f.write("=" * 70 + "\n")
+        f.write(f"  Target    : {domain}\n")
+        f.write(f"  Date      : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"  Found     : {len(found)}\n")
+        f.write(f"  Vulns     : {vuln_count}\n")
+        f.write("=" * 70 + "\n\n")
+
+        if vuln_count:
+            f.write("⚠  TAKEOVER VULNERABILITIES\n" + "-" * 70 + "\n")
+            for r in found:
+                if r.get("takeover"):
+                    f.write(f"  [VULN] {r['subdomain']}\n")
+                    f.write(f"         Service : {r['takeover_service']}\n")
+                    f.write(f"         Reason  : {r['takeover_reason']}\n")
+                    if r.get("cname"):
+                        f.write(f"         CNAME   : {r['cname']}\n")
+                    f.write("\n")
+            f.write("\n")
+
+        f.write("ALL SUBDOMAINS\n" + "-" * 70 + "\n")
+        for r in found:
+            vuln_tag = " [⚠ TAKEOVER]" if r.get("takeover") else ""
+            f.write(f"\n  {r['subdomain']}{vuln_tag}\n")
+            f.write(f"    IPv4   : {r['ip']}\n")
+            if r.get("ipv6"):
+                f.write(f"    IPv6   : {r['ipv6']}\n")
+            if r.get("cname"):
+                f.write(f"    CNAME  : {r['cname']}\n")
+            if r.get("status"):
+                f.write(f"    HTTP   : {r['status']} {r.get('url', '')}\n")
+            if r.get("title"):
+                f.write(f"    Title  : {r['title']}\n")
+            if r.get("ports"):
+                port_str = ", ".join(f"{p}/{n}" for p, n in r["ports"])
+                f.write(f"    Ports  : {port_str}\n")
+    print(f"  {C.GREEN}✔ TXT report saved → {C.BOLD}{fname}{C.RESET}")
+
+def save_json(domain, found, output_base):
+    fname = output_base + ".json"
+    vuln_count = sum(1 for r in found if r.get("takeover"))
+    with open(fname, "w") as f:
+        json.dump({
+            "tool": "SubdomainFinderPro",
+            "target": domain,
+            "date": datetime.now().isoformat(),
+            "summary": {
+                "total_found": len(found),
+                "vulnerabilities": vuln_count,
+            },
+            "results": found,
+        }, f, indent=2)
+    print(f"  {C.GREEN}✔ JSON report saved → {C.BOLD}{fname}{C.RESET}")
+
+def save_html(domain, found, output_base):
+    fname = output_base + ".html"
+    vuln_count = sum(1 for r in found if r.get("takeover"))
+    rows = ""
+    for r in found:
+        vuln_badge = (
+            f'<span class="badge vuln">⚠ TAKEOVER ({r["takeover_service"]})</span>'
+            if r.get("takeover") else ""
+        )
+        port_str = ", ".join(f"{p}/{n}" for p, n in r.get("ports", []))
+        status_cls = ""
+        sc = r.get("status")
+        if sc:
+            if 200 <= sc < 300: status_cls = "s2xx"
+            elif 300 <= sc < 400: status_cls = "s3xx"
+            elif 400 <= sc < 500: status_cls = "s4xx"
+            else: status_cls = "s5xx"
+        rows += f"""
+        <tr class="{'vuln-row' if r.get('takeover') else ''}">
+          <td><code>{r['subdomain']}</code> {vuln_badge}</td>
+          <td>{r['ip']}</td>
+          <td>{r.get('ipv6') or ''}</td>
+          <td>{r.get('cname') or ''}</td>
+          <td class="{status_cls}">{sc or ''}</td>
+          <td>{r.get('title') or ''}</td>
+          <td>{port_str}</td>
+        </tr>"""
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Subdomain Report — {domain}</title>
+<style>
+  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  body {{ font-family: 'Segoe UI', system-ui, sans-serif; background: #0d1117; color: #c9d1d9; padding: 2rem; }}
+  h1 {{ font-size: 1.8rem; color: #58a6ff; margin-bottom: .3rem; }}
+  .meta {{ color: #8b949e; font-size: .9rem; margin-bottom: 2rem; }}
+  .stats {{ display: flex; gap: 1.5rem; margin-bottom: 2rem; flex-wrap: wrap; }}
+  .stat {{ background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+           padding: 1rem 1.5rem; min-width: 130px; }}
+  .stat .num {{ font-size: 2rem; font-weight: 700; color: #58a6ff; }}
+  .stat .lbl {{ font-size: .8rem; color: #8b949e; margin-top: .2rem; }}
+  .stat.danger .num {{ color: #f85149; }}
+  table {{ width: 100%; border-collapse: collapse; font-size: .85rem; }}
+  th {{ background: #161b22; color: #8b949e; padding: .6rem .8rem; text-align: left;
+        border-bottom: 2px solid #30363d; font-weight: 600; }}
+  td {{ padding: .5rem .8rem; border-bottom: 1px solid #21262d; }}
+  tr:hover td {{ background: #161b22; }}
+  tr.vuln-row td {{ background: #3d1a1a; }}
+  tr.vuln-row:hover td {{ background: #4a2020; }}
+  code {{ color: #79c0ff; font-size: .85rem; }}
+  .badge {{ display: inline-block; padding: .15rem .5rem; border-radius: 4px;
+            font-size: .7rem; font-weight: 600; margin-left: .4rem; }}
+  .badge.vuln {{ background: #f851491a; color: #f85149; border: 1px solid #f85149; }}
+  .s2xx {{ color: #56d364; }} .s3xx {{ color: #e3b341; }}
+  .s4xx {{ color: #db6d28; }} .s5xx {{ color: #f85149; }}
+  .vuln-section {{ background: #3d1a1a; border: 1px solid #f85149;
+                   border-radius: 8px; padding: 1.2rem 1.5rem; margin-bottom: 2rem; }}
+  .vuln-section h2 {{ color: #f85149; margin-bottom: 1rem; }}
+  .vuln-item {{ background: #0d1117; border-radius: 6px; padding: .8rem 1rem;
+                margin-bottom: .8rem; }}
+  .vuln-item .sub {{ color: #79c0ff; font-weight: 600; }}
+  .vuln-item .detail {{ color: #8b949e; font-size: .82rem; margin-top: .3rem; }}
+</style>
+</head>
+<body>
+<h1>🔍 Subdomain Finder PRO</h1>
+<p class="meta">Target: <strong>{domain}</strong> &nbsp;|&nbsp; Scanned: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+
+<div class="stats">
+  <div class="stat"><div class="num">{len(found)}</div><div class="lbl">Subdomains Found</div></div>
+  <div class="stat {'danger' if vuln_count else ''}">
+    <div class="num">{vuln_count}</div><div class="lbl">Takeover Vulns</div>
+  </div>
+</div>
+"""
+    if vuln_count:
+        html += '<div class="vuln-section"><h2>⚠ Takeover Vulnerabilities</h2>'
+        for r in found:
+            if r.get("takeover"):
+                html += f"""<div class="vuln-item">
+  <div class="sub">{r['subdomain']}</div>
+  <div class="detail">Service: {r['takeover_service']} &nbsp;|&nbsp; {r['takeover_reason']}</div>
+  {'<div class="detail">CNAME: ' + r['cname'] + '</div>' if r.get('cname') else ''}
+</div>"""
+        html += "</div>"
+
+    html += f"""
+<table>
+  <thead>
+    <tr>
+      <th>Subdomain</th><th>IPv4</th><th>IPv6</th><th>CNAME</th>
+      <th>HTTP</th><th>Title</th><th>Open Ports</th>
+    </tr>
+  </thead>
+  <tbody>
+    {rows}
+  </tbody>
+</table>
+</body></html>"""
+
+    with open(fname, "w") as f:
+        f.write(html)
+    print(f"  {C.GREEN}✔ HTML report saved → {C.BOLD}{fname}{C.RESET}")
+
+
+# ═════════════════════════════════════════════════════════════════════
+#  MAIN SCAN ORCHESTRATOR
+# ═════════════════════════════════════════════════════════════════════
+def scan(domain, wordlist, threads=50, http_check=False,
+         port_scan=False, output_base=None,
+         skip_crtsh=False, skip_axfr=False):
+
+    start_time = time.time()
+
+    print(f"\n  {C.BOLD}{C.WHITE}Target    : {C.CYAN}{domain}{C.RESET}")
+    print(f"  {C.BOLD}{C.WHITE}Threads   : {C.CYAN}{threads}{C.RESET}")
+    print(f"  {C.BOLD}{C.WHITE}HTTP Chk  : {C.CYAN}{'Yes' if http_check else 'No'}{C.RESET}")
+    print(f"  {C.BOLD}{C.WHITE}Port Scan : {C.CYAN}{'Yes' if port_scan else 'No'}{C.RESET}")
+    print(f"  {C.BOLD}{C.WHITE}Started   : {C.CYAN}{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}{C.RESET}")
+    sep()
+
+    # ── Wildcard check ───────────────────────────────────────────────
+    print(f"\n  {C.YELLOW}[1/5] Wildcard DNS detection...{C.RESET}", end=" ")
+    wildcard_ip = detect_wildcard(domain)
+    if wildcard_ip:
+        print(f"{C.RED}⚠ Wildcard detected ({wildcard_ip}) — false positives will be filtered{C.RESET}")
+    else:
+        print(f"{C.GREEN}✔ No wildcard{C.RESET}")
+
+    # ── crt.sh ───────────────────────────────────────────────────────
+    crtsh_subs = set()
+    if not skip_crtsh:
+        print(f"  {C.YELLOW}[2/5] Certificate Transparency (crt.sh)...{C.RESET}", end=" ", flush=True)
+        crtsh_subs = crtsh_lookup(domain)
+        print(f"{C.GREEN}✔ {len(crtsh_subs)} subdomains found{C.RESET}")
+    else:
+        print(f"  {C.DIM}[2/5] crt.sh skipped{C.RESET}")
+
+    # ── Zone transfer ────────────────────────────────────────────────
+    axfr_subs = set()
+    ns_list   = []
+    if not skip_axfr:
+        print(f"  {C.YELLOW}[3/5] DNS Zone Transfer (AXFR)...{C.RESET}", end=" ", flush=True)
+        axfr_subs, ns_list = zone_transfer(domain)
+        if axfr_subs:
+            print(f"{C.RED}⚠ ZONE TRANSFER SUCCEEDED — {len(axfr_subs)} records leaked!{C.RESET}")
+        else:
+            print(f"{C.GREEN}✔ Zone transfer refused (expected){C.RESET}")
+    else:
+        print(f"  {C.DIM}[3/5] AXFR skipped{C.RESET}")
+
+    # ── Merge wordlist with discovered subs ──────────────────────────
+    extra_subs = set()
+    for s in crtsh_subs | axfr_subs:
+        prefix = s.replace(f".{domain}", "").replace(domain, "")
+        if prefix:
+            extra_subs.add(prefix)
+    combined = list(dict.fromkeys(wordlist + list(extra_subs)))
+
+    # ── Brute-force DNS ──────────────────────────────────────────────
+    print(f"  {C.YELLOW}[4/5] DNS brute-force ({len(combined)} subdomains)...{C.RESET}\n")
     found     = []
-    total     = len(wordlist)
+    total     = len(combined)
     completed = 0
     lock      = threading.Lock()
- 
-    print(f"\n  {C.BOLD}{C.WHITE}Target   : {C.CYAN}{domain}{C.RESET}")
-    print(f"  {C.BOLD}{C.WHITE}Wordlist : {C.CYAN}{total} subdomains{C.RESET}")
-    print(f"  {C.BOLD}{C.WHITE}Threads  : {C.CYAN}{threads}{C.RESET}")
-    print(f"  {C.BOLD}{C.WHITE}HTTP Chk : {C.CYAN}{'Yes' if http_check else 'No'}{C.RESET}")
-    print(f"  {C.BOLD}{C.WHITE}Started  : {C.CYAN}{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}{C.RESET}")
-    sep()
-    print(f"\n  {C.YELLOW}Scanning...{C.RESET}\n")
- 
+    vuln_count = 0
+
     def worker(sub):
-        nonlocal completed
-        full, ip, alive = resolve_subdomain(sub, domain)
+        nonlocal completed, vuln_count
+        full, ip, alive = resolve_subdomain(sub, domain, wildcard_ip=wildcard_ip)
         with lock:
             completed += 1
-            progress(completed, total, len(found))
-        if alive:
-            status_code = None
-            url         = None
-            if http_check:
-                status_code, url = check_http(full)
+            progress(completed, total, len(found), vuln_count)
+
+        if not alive:
+            return
+
+        record = {
+            "subdomain": full,
+            "ip":        ip,
+            "ipv6":      None,
+            "cname":     None,
+            "status":    None,
+            "url":       None,
+            "title":     None,
+            "ports":     [],
+            "takeover":  False,
+            "takeover_service": None,
+            "takeover_reason":  None,
+        }
+
+        # IPv6
+        record["ipv6"] = resolve_ipv6(full)
+
+        # CNAME
+        record["cname"] = get_cname(full)
+
+        # HTTP
+        http_body = ""
+        if http_check:
+            sc, url, title = check_http(full)
+            record["status"] = sc
+            record["url"]    = url
+            record["title"]  = title
+            if url:
+                try:
+                    r = requests.get(url, timeout=4, headers={"User-Agent": "Mozilla/5.0"})
+                    http_body = r.text
+                except Exception:
+                    pass
+
+        # Port scan
+        if port_scan and ip:
+            record["ports"] = scan_ports(ip)
+
+        # Takeover check
+        vuln, svc, reason = check_takeover(full, record["cname"], http_body)
+        if vuln:
+            record["takeover"]         = True
+            record["takeover_service"] = svc
+            record["takeover_reason"]  = reason
             with lock:
-                found.append({
-                    "subdomain": full,
-                    "ip":        ip,
-                    "status":    status_code,
-                    "url":       url,
-                })
-        return None
- 
+                vuln_count += 1
+
+        with lock:
+            found.append(record)
+
     with ThreadPoolExecutor(max_workers=threads) as executor:
-        futures = [executor.submit(worker, sub) for sub in wordlist]
+        futures = [executor.submit(worker, sub) for sub in combined]
         for _ in as_completed(futures):
             pass
- 
-    print(f"\n\n  {C.GREEN}✔ Scan complete!{C.RESET}\n")
+
+    elapsed = time.time() - start_time
+    print(f"\n\n  {C.GREEN}✔ Scan complete in {elapsed:.1f}s{C.RESET}\n")
+
+    # ── TXT records ──────────────────────────────────────────────────
+    print(f"  {C.YELLOW}[5/5] Fetching TXT/SPF records for root domain...{C.RESET}", end=" ")
+    txt_records = get_txt_records(domain)
+    print(f"{C.GREEN}✔ {len(txt_records)} TXT records{C.RESET}")
+
     sep()
- 
-    # ─── Print Results ────────────────────────────────────────
+
+    # ── Print results ────────────────────────────────────────────────
     if found:
         print(f"\n  {C.BOLD}{C.GREEN}FOUND {len(found)} SUBDOMAINS:{C.RESET}\n")
-        for i, item in enumerate(found, 1):
-            sc    = item["status"]
+        for i, r in enumerate(found, 1):
+            sc    = r["status"]
             color = status_color(sc)
             sc_str = f"{color}[{sc}]{C.RESET}" if sc else f"{C.DIM}[DNS]{C.RESET}"
-            print(f"  {C.DIM}[{i:03d}]{C.RESET}  {C.CYAN}{item['subdomain']:<40}{C.RESET}  "
-                  f"{C.YELLOW}{item['ip']:<18}{C.RESET}  {sc_str}")
+            vuln_tag = f"  {C.RED}{C.BOLD}⚠ TAKEOVER({r['takeover_service']}){C.RESET}" if r["takeover"] else ""
+            print(f"  {C.DIM}[{i:03d}]{C.RESET}  {C.CYAN}{r['subdomain']:<42}{C.RESET}  "
+                  f"{C.YELLOW}{r['ip']:<18}{C.RESET}  {sc_str}{vuln_tag}")
     else:
-        print(f"\n  {C.YELLOW}No subdomains found. Try a larger wordlist.{C.RESET}")
- 
+        print(f"\n  {C.YELLOW}No subdomains found.{C.RESET}")
+
+    # ── Vulnerability summary ────────────────────────────────────────
+    if vuln_count:
+        sep("═")
+        print(f"\n  {C.RED}{C.BOLD}⚠  {vuln_count} SUBDOMAIN TAKEOVER VULNERABILITY(IES) DETECTED{C.RESET}\n")
+        for r in found:
+            if r["takeover"]:
+                print(f"  {C.RED}►{C.RESET} {C.CYAN}{r['subdomain']}{C.RESET}")
+                print(f"    Service : {C.YELLOW}{r['takeover_service']}{C.RESET}")
+                print(f"    Reason  : {r['takeover_reason']}")
+                if r["cname"]:
+                    print(f"    CNAME   : {C.DIM}{r['cname']}{C.RESET}")
+                print()
+        print(f"  {C.YELLOW}Remediation: Remove or update the dangling DNS record.{C.RESET}\n")
+        sep("═")
+
+    # ── AXFR warning ─────────────────────────────────────────────────
+    if axfr_subs:
+        print(f"\n  {C.RED}{C.BOLD}⚠  DNS ZONE TRANSFER IS ENABLED — THIS IS A MISCONFIGURATION!{C.RESET}")
+        print(f"  {C.YELLOW}   Restrict AXFR to authorised nameservers only.{C.RESET}\n")
+
+    # ── TXT records display ──────────────────────────────────────────
+    if txt_records:
+        sep()
+        print(f"\n  {C.BOLD}TXT / SPF Records for {domain}:{C.RESET}")
+        for t in txt_records:
+            print(f"  {C.DIM}•{C.RESET} {t}")
+
     sep()
- 
-    # ─── Summary ─────────────────────────────────────────────
     print(f"\n  {C.BOLD}SUMMARY{C.RESET}")
-    print(f"  Total Checked : {C.CYAN}{total}{C.RESET}")
-    print(f"  Found         : {C.GREEN}{len(found)}{C.RESET}")
-    print(f"  Not Found     : {C.DIM}{total - len(found)}{C.RESET}")
- 
-    # ─── Save Results ─────────────────────────────────────────
-    if output_file and found:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        fname = output_file or f"subdomains_{domain}_{timestamp}.txt"
- 
-        # Save TXT
-        txt_file = fname.replace(".json", "") + ".txt"
-        with open(txt_file, "w") as f:
-            f.write(f"# Subdomain Finder Results\n")
-            f.write(f"# Target  : {domain}\n")
-            f.write(f"# Date    : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write(f"# Found   : {len(found)}\n\n")
-            for item in found:
-                f.write(f"{item['subdomain']} | {item['ip']} | {item['status']}\n")
-        print(f"\n  {C.GREEN}✔ Saved to {C.BOLD}{txt_file}{C.RESET}")
- 
-        # Save JSON
-        json_file = fname.replace(".txt", "") + ".json"
-        with open(json_file, "w") as f:
-            json.dump({
-                "target": domain,
-                "date": datetime.now().isoformat(),
-                "found": len(found),
-                "results": found
-            }, f, indent=2)
-        print(f"  {C.GREEN}✔ Saved to {C.BOLD}{json_file}{C.RESET}")
- 
+    print(f"  Checked        : {C.CYAN}{total}{C.RESET}")
+    print(f"  Subdomains     : {C.GREEN}{len(found)}{C.RESET}")
+    print(f"  Vulnerabilities: {C.RED if vuln_count else C.GREEN}{vuln_count}{C.RESET}")
+    print(f"  AXFR Exposed   : {C.RED + 'YES ⚠' if axfr_subs else C.GREEN + 'No'}{C.RESET}")
+    print(f"  Elapsed        : {C.CYAN}{elapsed:.1f}s{C.RESET}\n")
+
+    # ── Save reports ─────────────────────────────────────────────────
+    if output_base and found:
+        sep()
+        print()
+        save_txt(domain, found, output_base)
+        save_json(domain, found, output_base)
+        save_html(domain, found, output_base)
+        print()
+
     return found
- 
-# ─── Custom Wordlist Loader ───────────────────────────────────
-def load_wordlist(path):
-    if not os.path.exists(path):
-        print(f"  {C.RED}File not found: {path}{C.RESET}")
-        sys.exit(1)
-    with open(path) as f:
-        words = [line.strip() for line in f if line.strip()]
-    print(f"  {C.GREEN}✔ Loaded {len(words)} words from {path}{C.RESET}")
-    return words
- 
-# ─── Interactive Mode ─────────────────────────────────────────
+
+
+# ═════════════════════════════════════════════════════════════════════
+#  INTERACTIVE MODE
+# ═════════════════════════════════════════════════════════════════════
 def interactive_mode():
     print_banner()
- 
-    # Get domain
+
     print(f"  {C.BOLD}{C.WHITE}ENTER TARGET DOMAIN{C.RESET}")
-    print(f"  {C.DIM}Example: google.com  or  https://example.com{C.RESET}\n")
+    print(f"  {C.DIM}Example: example.com{C.RESET}\n")
     raw = input(f"  {C.YELLOW}>> Domain: {C.RESET}").strip()
     if not raw:
-        print(f"  {C.RED}No domain entered. Exiting.{C.RESET}")
-        sys.exit(0)
+        print(f"  {C.RED}No domain entered.{C.RESET}"); sys.exit(0)
     domain = clean_domain(raw)
-    print(f"  {C.GREEN}✔ Target set to: {domain}{C.RESET}\n")
- 
-    # Custom wordlist?
-    print(f"  {C.BOLD}{C.WHITE}WORDLIST{C.RESET}")
-    print(f"  1. Use built-in wordlist ({len(WORDLIST)} subdomains)")
-    print(f"  2. Load custom wordlist from file")
-    wl_choice = input(f"\n  {C.YELLOW}>> Choice (1/2): {C.RESET}").strip()
-    if wl_choice == "2":
-        path = input(f"  {C.YELLOW}>> File path: {C.RESET}").strip()
-        wordlist = load_wordlist(path)
+    print(f"  {C.GREEN}✔ Target: {domain}{C.RESET}\n")
+
+    # Wordlist
+    print(f"  {C.BOLD}WORDLIST{C.RESET}")
+    print(f"  1. Built-in ({len(WORDLIST)} subdomains)")
+    print(f"  2. Custom file")
+    wl = input(f"\n  {C.YELLOW}>> Choice (1/2): {C.RESET}").strip()
+    if wl == "2":
+        path = input(f"  {C.YELLOW}>> Path: {C.RESET}").strip()
+        if not os.path.exists(path):
+            print(f"  {C.RED}File not found.{C.RESET}"); sys.exit(1)
+        with open(path) as f:
+            wordlist = [l.strip() for l in f if l.strip()]
+        print(f"  {C.GREEN}✔ Loaded {len(wordlist)} words{C.RESET}")
     else:
         wordlist = WORDLIST
- 
-    # HTTP check?
-    print(f"\n  {C.BOLD}{C.WHITE}HTTP STATUS CHECK{C.RESET}")
-    print(f"  {C.DIM}Check if subdomains respond to HTTP/HTTPS? (slower but more info){C.RESET}")
-    http_ans = input(f"\n  {C.YELLOW}>> Enable HTTP check? (y/n): {C.RESET}").strip().lower()
+
+    # Modules
+    print(f"\n  {C.BOLD}OPTIONAL MODULES{C.RESET}")
+    http_ans = input(f"  {C.YELLOW}>> HTTP status check? (y/n): {C.RESET}").strip().lower()
     http_check = http_ans == "y"
- 
-    if http_check and not REQUESTS_AVAILABLE:
-        print(f"  {C.YELLOW}⚠ 'requests' not installed. Run: pip install requests{C.RESET}")
-        http_check = False
- 
-    # Save output?
-    print(f"\n  {C.BOLD}{C.WHITE}SAVE RESULTS{C.RESET}")
-    save_ans = input(f"  {C.YELLOW}>> Save results to file? (y/n): {C.RESET}").strip().lower()
-    output_file = None
+
+    port_ans = input(f"  {C.YELLOW}>> Port scan discovered hosts? (y/n): {C.RESET}").strip().lower()
+    port_scan = port_ans == "y"
+
+    # Save
+    print(f"\n  {C.BOLD}OUTPUT{C.RESET}")
+    save_ans = input(f"  {C.YELLOW}>> Save report (TXT + JSON + HTML)? (y/n): {C.RESET}").strip().lower()
+    output_base = None
     if save_ans == "y":
-        timestamp  = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_file = f"subdomains_{domain}_{timestamp}"
-        print(f"  {C.GREEN}✔ Results will be saved as {output_file}.txt / .json{C.RESET}")
- 
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_base = f"subdomains_{domain}_{ts}"
+        print(f"  {C.GREEN}✔ Will save as {output_base}.*{C.RESET}")
+
     # Threads
-    print(f"\n  {C.BOLD}{C.WHITE}THREADS (default: 50){C.RESET}")
-    t_input = input(f"  {C.YELLOW}>> Threads (press Enter for 50): {C.RESET}").strip()
+    t_input = input(f"\n  {C.YELLOW}>> Threads (Enter = 50): {C.RESET}").strip()
     threads = int(t_input) if t_input.isdigit() else 50
- 
-    # Run scan
-    scan(domain, wordlist, threads=threads, http_check=http_check, output_file=output_file)
- 
-# ─── CLI Mode ─────────────────────────────────────────────────
-def cli_mode(args):
-    domain = clean_domain(args.domain)
-    wordlist = load_wordlist(args.wordlist) if args.wordlist else WORDLIST
- 
-    if args.http and not REQUESTS_AVAILABLE:
-        print(f"  {C.YELLOW}⚠ Install requests: pip install requests{C.RESET}")
-        args.http = False
- 
-    output_file = args.output or f"subdomains_{domain}_{datetime.now().strftime('%Y%m%d_%H%M%S')}" if args.save else None
-    scan(domain, wordlist, threads=args.threads, http_check=args.http, output_file=output_file)
- 
-# ─── Entry Point ──────────────────────────────────────────────
+
+    scan(domain, wordlist, threads=threads, http_check=http_check,
+         port_scan=port_scan, output_base=output_base)
+
+
+# ═════════════════════════════════════════════════════════════════════
+#  CLI MODE
+# ═════════════════════════════════════════════════════════════════════
 def main():
     parser = argparse.ArgumentParser(
-        description="Subdomain Finder - Subdomain Enumeration Tool",
-        epilog="Example: python subdomain_finder.py --domain example.com --http --save"
+        description="Subdomain Finder PRO — Enumeration & Vulnerability Scanner",
+        epilog="Example: python subdomain_finder_pro.py --domain example.com --http --ports --save"
     )
-    parser.add_argument("--domain",   help="Target domain (e.g. example.com)")
-    parser.add_argument("--wordlist", help="Path to custom wordlist file")
-    parser.add_argument("--threads",  type=int, default=50, help="Number of threads (default: 50)")
-    parser.add_argument("--http",     action="store_true", help="Enable HTTP status check")
-    parser.add_argument("--save",     action="store_true", help="Save results to file")
-    parser.add_argument("--output",   help="Output filename (without extension)")
- 
+    parser.add_argument("--domain",    help="Target domain")
+    parser.add_argument("--wordlist",  help="Custom wordlist path")
+    parser.add_argument("--threads",   type=int, default=50, help="Threads (default: 50)")
+    parser.add_argument("--http",      action="store_true", help="HTTP status check")
+    parser.add_argument("--ports",     action="store_true", help="Port scan discovered hosts")
+    parser.add_argument("--save",      action="store_true", help="Save TXT/JSON/HTML reports")
+    parser.add_argument("--output",    help="Output base filename")
+    parser.add_argument("--no-crtsh",  action="store_true", help="Skip crt.sh lookup")
+    parser.add_argument("--no-axfr",   action="store_true", help="Skip zone transfer attempt")
     args = parser.parse_args()
- 
-    if args.domain:
-        print_banner()
-        cli_mode(args)
-    else:
+
+    if not args.domain:
         interactive_mode()
- 
+        return
+
+    print_banner()
+    domain   = clean_domain(args.domain)
+    wordlist = WORDLIST
+    if args.wordlist:
+        with open(args.wordlist) as f:
+            wordlist = [l.strip() for l in f if l.strip()]
+
+    output_base = None
+    if args.save:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_base = args.output or f"subdomains_{domain}_{ts}"
+
+    scan(domain, wordlist, threads=args.threads,
+         http_check=args.http, port_scan=args.ports,
+         output_base=output_base,
+         skip_crtsh=args.no_crtsh, skip_axfr=args.no_axfr)
+
+
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print(f"\n\n  {C.YELLOW}Scan interrupted by user.{C.RESET}\n")
+        print(f"\n\n  {C.YELLOW}Scan interrupted.{C.RESET}\n")
         sys.exit(0)
- 
