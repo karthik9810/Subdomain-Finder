@@ -156,6 +156,22 @@ def print_banner():
          ██║     ██║  ██║╚██████╔╝
          ╚═╝     ╚═╝  ╚═╝ ╚═════╝
 {C.RESET}
+{C.WHITE}{C.BOLD}
+        |`  .  __|_____|__  .  `|        
+        |\\ /| |  |     |  | |\\ /|       
+        | V | |  |     |  | | V |        
+        |   /  \\ |     | /  \\   |       
+   /\\_./|  / /\\ \\|     |/ /\\ \\  |\\  
+  /     \\ / /  \\/       \\/ \\  \\ |  \\ 
+ /   ,..| / |   |  (_)  |   | \\  |   \\
+|   /   |/  |  _|_______|_  |  \\ |    |
+|  | {C.CYAN}[o]{C.WHITE} |   {C.CYAN}( ){C.WHITE}         {C.CYAN}( ){C.WHITE}  |  {C.CYAN}[o]{C.WHITE} |   |
+|  |____|    `-'    {C.YELLOW}W{C.WHITE}    `-'    |____|   |
+ \\    {C.YELLOW}/\\{C.WHITE}    .  / \\___/ \\  .    {C.YELLOW}/\\{C.WHITE}    /  
+  \\  {C.YELLOW}/  \\{C.WHITE}  `-'   \\   /   `-'  {C.YELLOW}/  \\{C.WHITE}  /   
+   `{C.YELLOW}/    \\{C.WHITE}________\\ /{C.YELLOW}________/{C.WHITE}    \\{C.YELLOW}`{C.WHITE}    
+    {C.CYAN}~~~ WOLF MODE: HUNTING SUBDOMAINS ~~~{C.WHITE}
+{C.RESET}
 {C.DIM}  Subdomain Enumeration & Vulnerability Scanner  |  Authorized Use Only{C.RESET}
 {C.RED}  ⚠  Only scan domains you own or have WRITTEN permission to test.{C.RESET}
 {C.RED}  ⚠  Unauthorized scanning is illegal under computer crime laws.{C.RESET}
